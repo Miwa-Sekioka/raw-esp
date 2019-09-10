@@ -20,8 +20,8 @@
 
 #include "comm.h"
 #include "misc.h"
-#include "cobs.h"
 #include "crc16.h"
+#include "comm_spi.h"
 
 #define COMM_TASK_PRIO USER_TASK_PRIO_0
 
@@ -34,7 +34,6 @@
 // Shift beginnig of the buffer so payload is aligned.
 // This way message headers can be cast to structure directly.
 #define BUF_ALIGN_OFFSET (__BIGGEST_ALIGNMENT__ - 1)
-
 
 /* ------------------------------------------------------------------ send */
 
@@ -53,7 +52,7 @@ struct transmitter {
 };
 
 struct transmitter transmitter_uart0;
-
+static comm_callback_t m_cb = NULL;
 
 static void ICACHE_FLASH_ATTR
 transmitter_init(struct transmitter *t)
@@ -95,7 +94,7 @@ transmitter_push(struct transmitter *t, uint8_t *data, size_t len, size_t prio)
 
 	size_t buf_free = TX_RING_BUFFER_SIZE - buf_used;
 	size_t heap_free = system_get_free_heap_size(); // PERF: how much does it cost?
-
+	
 	switch (prio) {
 	case COMM_TX_PRIO_LOW:
 		if ((heap_free < 20000) || (buf_free < 15)) goto drop; break;
@@ -107,16 +106,12 @@ transmitter_push(struct transmitter *t, uint8_t *data, size_t len, size_t prio)
 	}
 
 	// prepare data
-	size_t encoded_max_size = COBS_ENCODED_MAX_SIZE(len) + 1;
-	uint8_t *encoded = os_malloc(encoded_max_size);
+	uint8_t *encoded = os_malloc(len);
 	if (!encoded)
 		return;
 
-	encoded[encoded_max_size - 1] = 0x55;
-	size_t encoded_size = cobs_encode(encoded, data, len);
-	if (encoded[encoded_max_size - 1] != 0x55) {
-		COMM_ERR("buffer overflow");
-	}
+  //copy data
+  os_memcpy(encoded, data, len);
 
 	// put into ring buffer
 	ets_intr_lock();
@@ -128,7 +123,7 @@ transmitter_push(struct transmitter *t, uint8_t *data, size_t len, size_t prio)
 
 	size_t i = t->buf_write_i & TX_RING_BUFFER_MASK;
 	t->bufs[i] = encoded;
-	t->buf_lens[i] = encoded_size;
+	t->buf_lens[i] = len;
 	t->buf_write_i++;
 	ets_intr_unlock();
 
@@ -148,11 +143,9 @@ static void transmitter_send(struct transmitter *t)
 	t->task_pending = false;
 	ets_intr_unlock();
 
-	uint32 fifo_cnt = (READ_PERI_REG(UART_STATUS(0)) >> UART_TXFIFO_CNT_S) &
-		UART_TXFIFO_CNT;
-	size_t fifo_free_n = 126 - fifo_cnt;
+	size_t fifo_free_n = spi_send_ready() ? 1: 0;
 	if (fifo_free_n == 0) {
-		uart0_tx_intr_enable();
+		//uart0_tx_intr_enable();
 		return;
 	}
 
@@ -164,11 +157,10 @@ static void transmitter_send(struct transmitter *t)
 		size_t len = t->buf_lens[buf_idx];
 		size_t idx = t->idx_in_buf;
 
-		for (; (idx < len) && fifo_free_n; idx++) {
-			WRITE_PERI_REG(UART_FIFO(0), buf[idx]);
-			fifo_free_n--;
-		}
-
+    spi_send_data(buf, len);
+    idx = len;
+    fifo_free_n = 0;
+ 
 		if (idx != len) {
 			t->idx_in_buf = idx;
 			break;
@@ -180,13 +172,13 @@ static void transmitter_send(struct transmitter *t)
 	}
 
 	if ((!fifo_free_n) && (t->buf_read_i != t->buf_write_i)) {
-		uart0_tx_intr_enable();
+		//uart0_tx_intr_enable();
 	}
 }
 
 
 /* ------------------------------------------------------------------ receive */
-
+/*
 struct decoder {
 	struct cobs_decoder cobs;
 	uint8_t buf[BUF_ALIGN_OFFSET + COBS_ENCODED_MAX_SIZE(MAX_MESSAGE_SIZE)];
@@ -197,31 +189,33 @@ struct decoder {
 };
 
 struct decoder dec_uart0;
-
+*/
 
 static inline void ICACHE_FLASH_ATTR
-decoder_check_and_dispatch_cb(void *decoder, uint8_t *data, size_t len)
+on_frame_received(uint8_t *data, size_t len)
 {
-	struct decoder *dec = decoder;
 	uint16_t crc_msg;
 	uint16_t crc_calc;
 
 	if (len < 3) {
-		dec->proto_errors ++;
+    os_printf("len err\n");	
 		return;
 	}
 
 	crc_calc = crc16_block(data, len - 2);
-	memcpy(&crc_msg, data + len - 2, 2);
+	os_memcpy(&crc_msg, data + len - 2, 2);
 	if (crc_calc != crc_msg) {
-		dec->crc_errors++;
+    os_printf("crc err\n");	
 		return;
 	}
 
-	if (dec->cb)
-		dec->cb(data[0], data + 1, len - 3);
+	if (m_cb){
+	  //os_printf("<<:%02x:%d", data[0], len-3);
+    m_cb(data[0], data + 1, len - 3);
+	}
 }
 
+/*
 static inline void ICACHE_FLASH_ATTR
 decoder_init(struct decoder *dec, comm_callback_t cb)
 {
@@ -232,36 +226,24 @@ decoder_init(struct decoder *dec, comm_callback_t cb)
 	dec->proto_errors = 0;
 	dec->crc_errors = 0;
 	dec->cb = cb;
-}
+}*/
 
+/*
 static inline void ICACHE_FLASH_ATTR
 decoder_put_data(struct decoder *dec, void *data, size_t len)
 {
 	cobs_decoder_put(&dec->cobs, data, len);
-}
+}*/
 
 static void do_rx()
 {
-	uint8_t buf[64];
-	uint32_t i, n;
-	uint8 c;
-	int total = 0;
-
-	while (1) {
-		n = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) &
-			UART_RXFIFO_CNT;
-		if (!n)
-			break;
-
-		n = MIN(n, sizeof(buf));
-		for (i = 0; i < n; i++) {
-		    buf[i] = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF;
-		    total++;
-		}
-		decoder_put_data(&dec_uart0, buf, n);
-	}
-
-	uart0_rx_intr_enable();
+	uint8_t *data;
+	uint32_t length;
+	spi_get_recv_data(&data, &length);
+	if(data != NULL){
+		on_frame_received(data, length);
+		spi_recv_buffer_clear();
+  }
 }
 
 
@@ -270,34 +252,11 @@ static void do_rx()
 static void comm_task(os_event_t *e)
 {
 	switch (e->sig) {
-	case DO_RX: do_rx(); break;
-	case DO_TX: transmitter_send(&transmitter_uart0); break;
-	default: COMM_ERR("unknown task variant");
+  	case DO_RX: do_rx(); break;
+	  case DO_TX: transmitter_send(&transmitter_uart0); break;
+	  default: COMM_ERR("unknown task variant");
 	}
 }
-
-
-// FIXME name. Actually it handles all uart events, not only rx.
-void uart0_rx_intr_handler(void *para)
-{
-	uint32_t stat = READ_PERI_REG(UART_INT_ST(UART0));
-
-	if (stat & (UART_RXFIFO_FULL_INT_ST | UART_RXFIFO_TOUT_INT_ST)) {
-		uart0_rx_intr_disable();
-		WRITE_PERI_REG(UART_INT_CLR(UART0),
-		               UART_RXFIFO_FULL_INT_CLR | UART_RXFIFO_TOUT_INT_CLR);
-
-		system_os_post(COMM_TASK_PRIO, DO_RX, 0);
-	}
-
-	if (stat & UART_TXFIFO_EMPTY_INT_ST) {
-		uart0_tx_intr_disable();
-		WRITE_PERI_REG(UART_INT_CLR(UART0), UART_TXFIFO_EMPTY_INT_CLR);
-
-		transmitter_wake_task(&transmitter_uart0);
-	}
-}
-
 
 /* ---------------------------------------------------------------- interface */
 
@@ -315,13 +274,11 @@ os_event_t comm_queue[3];
 
 void ICACHE_FLASH_ATTR
 comm_init(comm_callback_t cb) {
-	decoder_init(&dec_uart0, cb);
+  m_cb = cb;
 	transmitter_init(&transmitter_uart0);
 
 	system_os_task(comm_task, COMM_TASK_PRIO, comm_queue, ARRAY_SIZE(comm_queue));
-	uart_init(BIT_RATE_115200, BIT_RATE_115200);
-	uart_tx_one_char(UART0, COBS_BYTE_EOF);
-	uart0_rx_intr_enable();
+	spi_init();
 }
 
 
@@ -329,8 +286,8 @@ void ICACHE_FLASH_ATTR
 comm_get_stats(uint32_t *rx_errors,
                uint32_t *rx_crc_errors,
                uint32_t *dropped_packets) {
-	*rx_errors = dec_uart0.proto_errors + dec_uart0.crc_errors;
-	*rx_crc_errors = dec_uart0.crc_errors;
+	//*rx_errors = dec_uart0.proto_errors + dec_uart0.crc_errors;
+	//*rx_crc_errors = dec_uart0.crc_errors;
 	*dropped_packets = transmitter_uart0.dropped_packets;
 }
 
@@ -341,7 +298,7 @@ comm_send(uint8_t type, void *data, size_t n, size_t prio)
 	uint8_t buf[n + 3];
 
 	buf[0] = type;
-	memcpy(buf + 1, data, n);
+	os_memcpy(buf + 1, data, n);
 
 	uint16_t crc = crc16_block(buf, n + 1);
 	buf[n+1] = crc & 0xff;
@@ -363,3 +320,16 @@ comm_send_status(uint8_t s)
 {
 	comm_send_ctl(MSG_STATUS, &s, sizeof(s));
 }
+
+void ICACHE_FLASH_ATTR
+spi_send_end_handler()
+{
+	transmitter_wake_task(&transmitter_uart0);
+}
+
+void ICACHE_FLASH_ATTR
+spi_recv_handler(uint8_t *data, uint32_t length)
+{
+  system_os_post(COMM_TASK_PRIO, DO_RX, 0);
+}
+

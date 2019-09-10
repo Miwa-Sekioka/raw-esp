@@ -96,6 +96,14 @@ enum command_type {
 	MSG_PRINT_STATS            = 0x90,
 };
 
+enum log_level{
+  LOG_LEVEL_DEBUG   = 10,
+  LOG_LEVEL_INFO    = 20,
+  LOG_LEVEL_WARNING = 30,
+  LOG_LEVEL_ERROR   = 40,
+  CRITICAL= 50,
+};
+
 /* On boot/reset module is configured with whatever settings were present
 in NVRAM and bootup code. It would be flaky to account for this stored state
 in host's state machine, so module should be cleanly reinitialized. Here is

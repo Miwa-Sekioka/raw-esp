@@ -29,39 +29,71 @@ os_event_t *taskQueue;
 #define UART1   1
 #define MAX_PACKET_SIZE 1600
 
+#if ((SPI_FLASH_SIZE_MAP == 0) || (SPI_FLASH_SIZE_MAP == 1))
+#error "The flash map is not supported"
+#elif (SPI_FLASH_SIZE_MAP == 2)
+#define SYSTEM_PARTITION_OTA_SIZE							0x6A000
+#define SYSTEM_PARTITION_OTA_2_ADDR							0x81000
+#define SYSTEM_PARTITION_RF_CAL_ADDR						0xfb000
+#define SYSTEM_PARTITION_PHY_DATA_ADDR						0xfc000
+#define SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR				0xfd000
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR           0x7c000
+#elif (SPI_FLASH_SIZE_MAP == 3)
+#define SYSTEM_PARTITION_OTA_SIZE							0x6A000
+#define SYSTEM_PARTITION_OTA_2_ADDR							0x81000
+#define SYSTEM_PARTITION_RF_CAL_ADDR						0x1fb000
+#define SYSTEM_PARTITION_PHY_DATA_ADDR						0x1fc000
+#define SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR				0x1fd000
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR           0x7c000
+#elif (SPI_FLASH_SIZE_MAP == 4)
+#define SYSTEM_PARTITION_OTA_SIZE							0x6A000
+#define SYSTEM_PARTITION_OTA_2_ADDR							0x81000
+#define SYSTEM_PARTITION_RF_CAL_ADDR						0x3fb000
+#define SYSTEM_PARTITION_PHY_DATA_ADDR						0x3fc000
+#define SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR				0x3fd000
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR           0x7c000
+#elif (SPI_FLASH_SIZE_MAP == 5)
+#define SYSTEM_PARTITION_OTA_SIZE							0x6A000
+#define SYSTEM_PARTITION_OTA_2_ADDR							0x101000
+#define SYSTEM_PARTITION_RF_CAL_ADDR						0x1fb000
+#define SYSTEM_PARTITION_PHY_DATA_ADDR						0x1fc000
+#define SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR				0x1fd000
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR           0xfc000
+#elif (SPI_FLASH_SIZE_MAP == 6)
+#define SYSTEM_PARTITION_OTA_SIZE							0x6A000
+#define SYSTEM_PARTITION_OTA_2_ADDR							0x101000
+#define SYSTEM_PARTITION_RF_CAL_ADDR						0x3fb000
+#define SYSTEM_PARTITION_PHY_DATA_ADDR						0x3fc000
+#define SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR				0x3fd000
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR           0xfc000
+#else
+#error "The flash map is not supported"
+#endif
+
+#define SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM                SYSTEM_PARTITION_CUSTOMER_BEGIN
+
+#undef  os_printf
+#define os_printf(...) {}
+
 static uint8_t forward_ip_broadcasts = 1;
 static enum forwarding_mode global_forwarding_mode = FORWARDING_MODE_NONE;
-
+static const partition_item_t at_partition_table[] = {
+    { SYSTEM_PARTITION_BOOTLOADER, 	0x0, 0x1000},
+    { SYSTEM_PARTITION_OTA_1, 0x1000, SYSTEM_PARTITION_OTA_SIZE},
+    { SYSTEM_PARTITION_OTA_2, SYSTEM_PARTITION_OTA_2_ADDR, SYSTEM_PARTITION_OTA_SIZE},
+    { SYSTEM_PARTITION_RF_CAL, SYSTEM_PARTITION_RF_CAL_ADDR, 0x1000},
+    { SYSTEM_PARTITION_PHY_DATA, SYSTEM_PARTITION_PHY_DATA_ADDR, 0x1000},
+    { SYSTEM_PARTITION_SYSTEM_PARAMETER, SYSTEM_PARTITION_SYSTEM_PARAMETER_ADDR, 0x3000},
+    //{ SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM, SYSTEM_PARTITION_CUSTOMER_PRIV_PARAM_ADDR, 0x1000},
+};
 
 void ICACHE_FLASH_ATTR user_pre_init(void)
 {
-	bool rc = false;
-	  static const partition_item_t part_table[] =
-		  {
-		   {SYSTEM_PARTITION_RF_CAL,
-		    0x3fb000,
-		    0x1000},
-		   {SYSTEM_PARTITION_PHY_DATA,
-		    0x3fc000,
-		    0x1000},
-		   {SYSTEM_PARTITION_SYSTEM_PARAMETER,
-		    0x3fd000,
-		    0x3000},
-		  };
-
-	  // This isn't an ideal approach but there's not much point moving on unless
-	  // or until this has succeeded cos otherwise the SDK will just barf and
-	  // refuse to call user_init()
-	  while (!rc)
-	  {
-		  rc = system_partition_table_regist(part_table,
-		                                     sizeof(part_table)/sizeof(part_table[0]),
-		                                     4);
-	  }
-
-	  return;
+  if(!system_partition_table_regist(at_partition_table, sizeof(at_partition_table)/sizeof(at_partition_table[0]),SPI_FLASH_SIZE_MAP)) {
+		os_printf("system_partition_table_regist fail\r\n");
+		while(1);
+	}
 }
-
 
 static u8_t ICACHE_FLASH_ATTR
 raw_receiver(void *arg, struct raw_pcb *pcb, struct pbuf *p, ip_addr_t *addr)
@@ -73,7 +105,7 @@ raw_receiver(void *arg, struct raw_pcb *pcb, struct pbuf *p, ip_addr_t *addr)
 		return 0;
 
 	if (pbuf_copy_partial(p, &hdr, sizeof(hdr), 0) != sizeof(hdr)) {
-		COMM_WARN("WLan packet of size %d has incomplete header",
+		COMM_DBG("WLan packet of size %d has incomplete header",
 			  p->tot_len);
 		return 0;
 	}
@@ -87,7 +119,7 @@ raw_receiver(void *arg, struct raw_pcb *pcb, struct pbuf *p, ip_addr_t *addr)
 		int offset = 4 * IPH_HL(&hdr);
 		struct udp_hdr udp_h;
 		if (!pbuf_copy_partial(p, &udp_h, sizeof(udp_h), offset)) {
-			COMM_WARN("Can't copy UDP header from WLan packet");
+			COMM_DBG("Can't copy UDP header from WLan packet");
 			return 0;
 		}
 		uint16_t src = ntohs(udp_h.src);
@@ -100,10 +132,10 @@ raw_receiver(void *arg, struct raw_pcb *pcb, struct pbuf *p, ip_addr_t *addr)
 
 	if (p->next) {
 		// it's possible to handle this case but I've not seen it yet
-		COMM_ERR("internal error: got scattered packet");
+		os_printf("internal error: got scattered packet");
 	} else {
 		if (p->len > MAX_PACKET_SIZE) {
-			COMM_WARN("IP packet too large: %d", (int) p->len);
+			COMM_DBG("IP packet too large: %d", (int) p->len);
 		} else {
 			// TCP ACKs should be 48 bytes
 			size_t prio = (p->len < 48 + 20) ? COMM_TX_PRIO_MEDIUM : COMM_TX_PRIO_LOW;
@@ -149,6 +181,7 @@ init_wlan() {
 	/* esp_now_unregister_recv_cb(); */
 	/* esp_now_unregister_send_cb(); */
 
+  
 	raw_pcb_tcp = raw_new(6);
 	raw_pcb_udp = raw_new(17);
 	if (!raw_pcb_tcp || !raw_pcb_udp) {
@@ -227,26 +260,26 @@ static void mitm_interface()
 	   in STA mode. */
 	struct netif *netif = eagle_lwip_getif(0);
 	if (!netif) {
-		COMM_DBG("mitm_interface: netif not ready");
+		COMM_WARN("mitm_interface: netif not ready");
 		return;
 	}
 
 	if (netif->input != netif_input_mitm) {
-		COMM_INFO("mitm_interface: input %x",
+		COMM_DBG("mitm_interface: input %x",
 			  (uint32_t)((void *)netif->input));
 		netif_input_orig = netif->input;
 		netif->input = netif_input_mitm;
 	}
 
 	if (netif->output != netif_output_mitm) {
-		COMM_INFO("mitm_interface: output %x",
+		COMM_DBG("mitm_interface: output %x",
 			  (uint32_t)((void *)netif->output));
 		netif_output_orig = netif->output;
 		netif->output = netif_output_mitm;
 	}
 
 	if (netif->linkoutput != netif_linkoutput_mitm) {
-		COMM_INFO("mitm_interface: linkoutput %x",
+		COMM_DBG("mitm_interface: linkoutput %x",
 			  (uint32_t)((void *)netif->linkoutput));
 		netif_linkoutput_orig = netif->linkoutput;
 		netif->linkoutput = netif_linkoutput_mitm;
@@ -272,7 +305,7 @@ inject_ip_packet(uint8_t *data, int n)
 		COMM_ERR("Packet of size %d is too short", n);
 		return -1;
 	}
-	memcpy(&hdr, data, sizeof(hdr));
+	os_memcpy(&hdr, data, sizeof(hdr));
 
 	if ((hdr._proto != IP_PROTO_TCP) && (hdr._proto != IP_PROTO_UDP)) {
 		COMM_ERR("Proto %d is not supported", hdr._proto);
@@ -292,7 +325,7 @@ inject_ip_packet(uint8_t *data, int n)
 		COMM_ERR("Failed to allocate packet of size %d", n);
 		return -1;
 	}
-	memcpy(p->payload, payload, n);
+	os_memcpy(p->payload, payload, n);
 	p->tot_len = n;
 	p->len = n;
 
@@ -327,7 +360,7 @@ inject_ether_packet(uint8_t *data, int n)
 		COMM_ERR("Failed to allocate packet of size %d", n);
 		goto fail;
 	}
-	memcpy(p->payload, data, n);
+	os_memcpy(p->payload, data, n);
 	p->tot_len = n;
 	p->len = n;
 
@@ -378,8 +411,8 @@ scan_done(void *arg, STATUS status)
 		e.index = i++;
 		bss_len = strlen(bss_iter->ssid);
 		e.ssid_len = MIN(bss_len, sizeof(e.ssid));
-		memcpy(e.ssid, bss_iter->ssid, e.ssid_len);
-		memcpy(e.bssid, bss_iter->bssid, sizeof(e.bssid));
+		os_memcpy(e.ssid, bss_iter->ssid, e.ssid_len);
+		os_memcpy(e.bssid, bss_iter->bssid, sizeof(e.bssid));
 		e.channel = bss_iter->channel;
 		e.auth_mode = bss_iter->authmode;
 		e.rssi = bss_iter->rssi;
@@ -399,6 +432,7 @@ scan_done(void *arg, STATUS status)
 #define FAIL(...) do { \
 	comm_send_status(255); \
 	COMM_ERR(__VA_ARGS__); \
+	os_printf(__VA_ARGS__); \
 	return; \
 } while(0)
 
@@ -410,6 +444,7 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 	   message from host.
 	   TODO: maybe use a timer instead? */
 	mitm_interface();
+  os_printf("<<:%d\n",n);
 
 	switch(type) {
 	case MSG_IP_PACKET:
@@ -521,8 +556,8 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 		memset(conf.bssid, 0, sizeof(conf.bssid));
 		memset(conf.password, 0, sizeof(conf.password));
 
-		memcpy(conf.ssid, in_conf->ssid, in_conf->ssid_len);
-		memcpy(conf.password, in_conf->password, in_conf->password_len);
+		os_memcpy(conf.ssid, in_conf->ssid, in_conf->ssid_len);
+		os_memcpy(conf.password, in_conf->password, in_conf->password_len);
 
 		TRY(!(wifi_get_opmode() & STATION_MODE), // hmm, FIXME?
 		    "Cannot set STA conf when not in STA mode");
@@ -562,7 +597,7 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 		   no \0 in data */
 		memset(&config, 0, sizeof(config));
 		if (r->ssid_len) {
-			memcpy(ssid_buf, r->ssid, sizeof(r->ssid));
+			os_memcpy(ssid_buf, r->ssid, sizeof(r->ssid));
 			ssid_buf[sizeof(ssid_buf) - 1] = '\0';
 			config.ssid = ssid_buf;
 		}
@@ -641,9 +676,9 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 			     sizeof(conf.password) - 1);
 
 		memset(conf.ssid, 0, sizeof(conf.ssid));
-		memcpy(conf.ssid, in_conf->ssid, in_conf->ssid_len);
+		os_memcpy(conf.ssid, in_conf->ssid, in_conf->ssid_len);
 		memset(conf.password, 0, sizeof(conf.password));
-		memcpy(conf.password, in_conf->password, in_conf->password_len);
+		os_memcpy(conf.password, in_conf->password, in_conf->password_len);
 		conf.ssid_len = in_conf->ssid_len;
 		conf.channel = in_conf->channel;
 		conf.authmode = in_conf->auth_mode; // check
@@ -651,15 +686,16 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 		conf.max_connection = 4; // is this current maximum?
 		conf.beacon_interval = in_conf->beacon_interval;
 
-		/* COMM_INFO("Conf: ssid_len=%d, ssid=%s pass=%s chan=%d " */
-		/*           "auth=%d int=%d", */
-		/* 	  conf.ssid_len, conf.ssid, conf.password, conf.channel, */
-		/* 	  conf.authmode, conf.beacon_interval */
-		/* ); */
+    
+		COMM_INFO("Conf: ssid_len=%d, ssid=%s pass=%s chan=%d "
+		          "auth=%d int=%d",
+			conf.ssid_len, conf.ssid, conf.password, conf.channel,
+		  conf.authmode, conf.beacon_interval
+		);
 
 		TRY(!(wifi_get_opmode() & SOFTAP_MODE), // FIXME?
 		    "Cannot switch to SoftAP mode");
-		TRY(!wifi_softap_set_config(&conf),
+		TRY(!wifi_softap_set_config_current(&conf),
 		     "Call to set WIFI ssid/pass failed");
 
 		comm_send_status(0);
@@ -741,16 +777,18 @@ user_init(void)
 	os_delay_us(50*1000);   // delay 50ms before init uart
 
 	uart_init(BIT_RATE_115200, BIT_RATE_115200);
+	os_delay_us(50*1000);   // delay 50ms before init uart
+	
 	comm_init(packet_from_host);
 
 	comm_send_ctl(MSG_BOOT, NULL, 0);
 
 	/* lwip_init(); */
 
-	COMM_INFO("SDK version: %s", system_get_sdk_version());
-	COMM_INFO("FW version: %s", FW_VERSION);
-	COMM_INFO("Heap size: %d", system_get_free_heap_size());
-	COMM_INFO("Alignment: %d", __BIGGEST_ALIGNMENT__);
+	os_printf("SDK version: %s\n", system_get_sdk_version());
+	os_printf("FW version: %s\n", FW_VERSION);
+	os_printf("Heap size: %d\n", system_get_free_heap_size());
+	os_printf("Alignment: %d\n", __BIGGEST_ALIGNMENT__);
 
 	/* asm("RSR %0, PS" : "=r"(ps)); */
 	/* COMM_INFO("IRQ level: %d", (int)ps); */
@@ -766,3 +804,4 @@ user_init(void)
 	/* task_init(); */
 	init_wlan();
 }
+
