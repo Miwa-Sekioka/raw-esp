@@ -1,0 +1,15 @@
+[Unit]
+Description=WROOM relay
+After=syslog.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/wroom_relay
+ExecStart=/var/wroom_relay/wroom_relay /dev/spidev0.0
+StandardOutput=null
+StandardError=syslog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy = multi-user.target

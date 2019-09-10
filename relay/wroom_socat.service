@@ -1,0 +1,16 @@
+[Unit]
+Description=WROOM socat
+After=syslog.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/wroom_relay
+ExecStart=/var/wroom_relay/wroom_socat.sh
+StandardOutput=null
+StandardError=syslog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy = multi-user.target
