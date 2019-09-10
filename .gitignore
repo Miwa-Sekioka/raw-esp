@@ -1,4 +1,6 @@
+*.tmp
 *.o
-*.d
-\#*\#
-*.a
+build/
+firmware/
+***/.output
+
