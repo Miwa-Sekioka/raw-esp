@@ -139,7 +139,7 @@ raw_receiver(void *arg, struct raw_pcb *pcb, struct pbuf *p, ip_addr_t *addr)
 		} else {
 			// TCP ACKs should be 48 bytes
 			size_t prio = (p->len < 48 + 20) ? COMM_TX_PRIO_MEDIUM : COMM_TX_PRIO_LOW;
-			comm_send(MSG_IP_PACKET, p->payload, p->len, prio);
+      comm_send(MSG_IP_PACKET, p->payload, p->len, prio);
 		}
 	}
 
@@ -294,7 +294,7 @@ inject_ip_packet(uint8_t *data, int n)
 	uint8_t *payload;
 	int hl;
 	struct pbuf *p;
-        struct raw_pcb *pcb;
+  struct raw_pcb *pcb;
 	int status;
 
 	/* uint32_t ps; */
@@ -436,6 +436,25 @@ scan_done(void *arg, STATUS status)
 	return; \
 } while(0)
 
+
+static void ICACHE_FLASH_ATTR
+send_station_ip_conf_replay()
+{
+	struct msg_ip_conf conf;
+	struct ip_info info;
+	TRY(!wifi_get_ip_info(STATION_IF, &info),
+	    "wifi_get_ip_info() failed");
+	conf.address = info.ip.addr;
+	conf.netmask = info.netmask.addr;
+	conf.gateway = info.gw.addr;
+
+	size_t i;
+	for (i = 0; i < ARRAY_SIZE(conf.dns); i++) {
+		conf.dns[i] = dns_getserver(i);
+	}
+	comm_send_ctl(MSG_STATION_IP_CONF_REPLY, (void *)&conf, sizeof(conf));
+}
+
 static void ICACHE_FLASH_ATTR
 packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 {
@@ -450,7 +469,7 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 	case MSG_IP_PACKET:
 		COMM_DBG("Packet from host, %d bytes", n);
 		if (global_forwarding_mode == FORWARDING_MODE_IP)
-			inject_ip_packet(data, n);
+			inject_ip_packet(data, n);		
 		else
 			COMM_ERR("Cannot forward IP packet in mode %d",
 				 (int) global_forwarding_mode);
@@ -478,7 +497,7 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 			FAIL("Cannot decode bitmask %d", (int)data[0]);
 		}
 
-		TRY(!wifi_set_opmode(mode), "wifi_set_opmode() failed");
+		TRY(!wifi_set_opmode_current(mode), "wifi_set_opmode() failed");
 		comm_send_status(0);
 		break;
 	}
@@ -520,19 +539,7 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 		break;
 	}
 	case MSG_STATION_IP_CONF_REQUEST: {
-		struct msg_ip_conf conf;
-		struct ip_info info;
-		TRY(!wifi_get_ip_info(STATION_IF, &info),
-		    "wifi_get_ip_info() failed");
-		conf.address = info.ip.addr;
-		conf.netmask = info.netmask.addr;
-		conf.gateway = info.gw.addr;
-
-		size_t i;
-		for (i = 0; i < ARRAY_SIZE(conf.dns); i++) {
-			conf.dns[i] = dns_getserver(i);
-		}
-		comm_send_ctl(MSG_STATION_IP_CONF_REPLY, (void *)&conf, sizeof(conf));
+   		send_station_ip_conf_replay();
 		break;
 	}
 	case MSG_STATION_CONF_SET: {
@@ -764,6 +771,19 @@ packet_from_host(uint8_t type, uint8_t *data, uint32_t n)
 	}
 }
 
+/*
+* detect IP address change(DHCP client)
+*/
+void wifi_handle_event_cb(System_Event_t *evt)
+{
+  switch(evt->event)
+  {
+    case EVENT_STAMODE_GOT_IP:
+      send_station_ip_conf_replay();
+    break;
+  }
+}
+
 /******************************************************************************
  * FunctionName : user_init
  * Description  : entry of user application, init user function here
@@ -802,6 +822,7 @@ user_init(void)
 	/* COMM_INFO("IRQ level (unlock): %d", (int)ps); */
 
 	/* task_init(); */
+	wifi_set_event_handler_cb(wifi_handle_event_cb);
 	init_wlan();
 }
 
